@@ -201,8 +201,7 @@ class wideband_receiver(grgsm.hier_block):
 
 class wideband_scanner(gr.top_block):
     
-    def __init__(self, rec_len=3, sample_rate=2e6, carrier_frequency=939e6, ppm=0, args=""):
-        
+    def __init__(self, rec_len=3, sample_rate=2e6, carrier_frequency=939e6, ppm=0, gain=0, args=""):
         gr.top_block.__init__(self, "Wideband Scanner")
         
         self.rec_len = rec_len
@@ -228,7 +227,14 @@ class wideband_scanner(gr.top_block):
         
         self.rtlsdr_source.set_dc_offset_mode(2, 0)
         self.rtlsdr_source.set_iq_balance_mode(0, 0)
-        self.rtlsdr_source.set_gain_mode(True, 0)
+        if gain:
+            self.rtlsdr_source.set_gain_mode(False, 0)
+            self.rtlsdr_source.set_gain(gain, 0)
+            self.rtlsdr_source.set_if_gain(20, 0)
+            self.rtlsdr_source.set_bb_gain(20, 0)
+        else:
+            self.rtlsdr_source.set_gain_mode(True, 0)
+
         self.rtlsdr_source.set_bandwidth(sample_rate, 0)
     
         self.head = blocks.head(gr.sizeof_gr_complex * 1, int(rec_len * sample_rate))
@@ -313,7 +319,6 @@ if __name__ == '__main__':
         help="Scan speed [default=%default]. Value range 0-5.")
     parser.add_option("-v", "--verbose", action="store_true", 
                       help="If set, verbose information output is printed: ccch configuration, cell ARFCN's, neighbour ARFCN's")
-    
     """
         Dont forget: sudo sysctl kernel.shmmni=32000
     """
@@ -340,7 +345,8 @@ if __name__ == '__main__':
     stop_freq = last_freq + 0.2e6 * channels_num
     
     while current_freq < stop_freq:
-        
+        print current_freq
+
         # silence rtl_sdr output:
         # open 2 fds
         null_fds = [os.open(os.devnull, os.O_RDWR) for x in xrange(2)]
@@ -353,7 +359,8 @@ if __name__ == '__main__':
         # instantiate scanner and processor
         scanner = wideband_scanner(rec_len=6-options.speed, 
                             sample_rate=options.samp_rate, 
-                            carrier_frequency=current_freq, 
+                            carrier_frequency=current_freq,
+                            gain=options.gain,
                             ppm=options.ppm, args=options.args)
 
         # start recording
@@ -370,6 +377,7 @@ if __name__ == '__main__':
         
         freq_offsets = numpy.fft.ifftshift(numpy.array(range(int(-numpy.floor(channels_num/2)),int(numpy.floor((channels_num+1)/2))))*2e5)
         detected_c0_channels = scanner.gsm_extract_system_info.get_chans()
+        print detected_c0_channels
                 
         if detected_c0_channels:
             chans = numpy.array(scanner.gsm_extract_system_info.get_chans())
