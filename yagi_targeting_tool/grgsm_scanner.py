@@ -210,8 +210,11 @@ class wideband_scanner(gr.top_block):
 
     def __init__(
         self, rec_len=3, sample_rate=2e6, carrier_frequency=939e6,
-        ppm=0, gain=0, args=""
+        ppm=0, gain=None, if_gain=None, bb_gain=None, offset=None, args=""
     ):
+        if offset is None:
+            offset = -0.1e6
+
         gr.top_block.__init__(self, "Wideband Scanner")
 
         self.rec_len = rec_len
@@ -221,54 +224,65 @@ class wideband_scanner(gr.top_block):
 
         # if no file name is given process data from rtl_sdr source
         print "Args=", args
-        self.rtlsdr_source = osmosdr.source(
-            args="numchan=" + str(1) + " " + args)
+        self.osmosdr_source = osmosdr.source(
+            args="numchan=" + str(1) + " " + args
+        )
 
-        self.rtlsdr_source.set_sample_rate(sample_rate)
+        self.osmosdr_source.set_sample_rate(sample_rate)
 
         # capture half of GSM channel lower than channel center (-0.1MHz)
         # this is needed when even number of channels is captured in order to
         # process full captured bandwidth
 
-        self.rtlsdr_source.set_center_freq(carrier_frequency - 0.1e6, 0)
+        self.osmosdr_source.set_center_freq(carrier_frequency + offset, 0)
 
         # correction of central frequency
         # if the receiver has large frequency offset
         # the value of this variable should be set close to that offset in ppm
-        self.rtlsdr_source.set_freq_corr(options.ppm, 0)
+        self.osmosdr_source.set_freq_corr(ppm, 0)
 
-        self.rtlsdr_source.set_dc_offset_mode(2, 0)
-        self.rtlsdr_source.set_iq_balance_mode(0, 0)
-        if gain:
-            self.rtlsdr_source.set_gain_mode(False, 0)
-            self.rtlsdr_source.set_gain(gain, 0)
-            self.rtlsdr_source.set_if_gain(20, 0)
-            self.rtlsdr_source.set_bb_gain(20, 0)
+        self.osmosdr_source.set_dc_offset_mode(2, 0)
+        self.osmosdr_source.set_iq_balance_mode(0, 0)
+        if reduce(lambda _, y: y is not None, [gain, if_gain, bb_gain]):
+            self.osmosdr_source.set_gain_mode(False, 0)
+            self.osmosdr_source.set_gain(gain or 24, 0)
+            self.osmosdr_source.set_if_gain(if_gain or 20, 0)
+            self.osmosdr_source.set_bb_gain(bb_gain or 20, 0)
         else:
-            self.rtlsdr_source.set_gain_mode(True, 0)
+            self.osmosdr_source.set_gain_mode(True, 0)
 
-        self.rtlsdr_source.set_bandwidth(sample_rate, 0)
+        self.osmosdr_source.set_bandwidth(sample_rate, 0)
 
         self.head = blocks.head(gr.sizeof_gr_complex * 1,
                                 int(rec_len * sample_rate))
 
         # shift again by -0.1MHz in order to align channel center in 0Hz
-        self.blocks_rotator_cc = blocks.rotator_cc(
-            -2 * pi * 0.1e6 / options.samp_rate)
+        if offset:
+            self.blocks_rotator_cc = blocks.rotator_cc(
+                2 * pi * offset / sample_rate
+            )
 
         self.wideband_receiver = wideband_receiver(
             OSR=4, fc=carrier_frequency, samp_rate=sample_rate)
-        self.gsm_extract_system_info = grgsm.extract_system_info()
+        self.system_info = grgsm.extract_system_info()
 
-        self.connect((self.rtlsdr_source, 0), (self.head, 0))
-        self.connect((self.head, 0), (self.blocks_rotator_cc, 0))
-        self.connect((self.blocks_rotator_cc, 0), (self.wideband_receiver, 0))
+        self.connect((self.osmosdr_source, 0), (self.head, 0))
+        if offset:
+            self.connect((self.head, 0), (self.blocks_rotator_cc, 0))
+            self.connect(
+                (self.blocks_rotator_cc, 0), (self.wideband_receiver, 0)
+            )
+        else:
+            self.connect(
+                (self.head, 0), (self.wideband_receiver, 0)
+            )
+
         self.msg_connect(self.wideband_receiver, 'msgs',
-                         self.gsm_extract_system_info, 'msgs')
+                         self.system_info, 'msgs')
 
     def set_carrier_frequency(self, carrier_frequency):
         self.carrier_frequency = carrier_frequency
-        self.rtlsdr_source.set_center_freq(carrier_frequency - 0.1e6, 0)
+        self.osmosdr_source.set_center_freq(carrier_frequency - 0.1e6, 0)
 
 
 class channel_info(object):
@@ -428,29 +442,29 @@ if __name__ == '__main__':
                 int(numpy.floor((channels_num + 1) / 2))
             )) * 2e5
         )
-        detected_c0_channels = scanner.gsm_extract_system_info.get_chans()
+        detected_c0_channels = scanner.system_info.get_chans()
         print detected_c0_channels
 
         if detected_c0_channels:
-            chans = numpy.array(scanner.gsm_extract_system_info.get_chans())
+            chans = numpy.array(scanner.system_info.get_chans())
             found_freqs = current_freq + freq_offsets[(chans)]
 
             cell_ids = numpy.array(
-                scanner.gsm_extract_system_info.get_cell_id())
-            lacs = numpy.array(scanner.gsm_extract_system_info.get_lac())
-            mccs = numpy.array(scanner.gsm_extract_system_info.get_mcc())
-            mncs = numpy.array(scanner.gsm_extract_system_info.get_mnc())
+                scanner.system_info.get_cell_id())
+            lacs = numpy.array(scanner.system_info.get_lac())
+            mccs = numpy.array(scanner.system_info.get_mcc())
+            mncs = numpy.array(scanner.system_info.get_mnc())
             ccch_confs = numpy.array(
-                scanner.gsm_extract_system_info.get_ccch_conf())
-            powers = numpy.array(scanner.gsm_extract_system_info.get_pwrs())
+                scanner.system_info.get_ccch_conf())
+            powers = numpy.array(scanner.system_info.get_pwrs())
 
             found_list = []
             for i in range(0, len(chans)):
                 cell_arfcn_list = (
-                    scanner.gsm_extract_system_info.get_cell_arfcns(chans[i])
+                    scanner.system_info.get_cell_arfcns(chans[i])
                 )
                 neighbour_list = (
-                    scanner.gsm_extract_system_info.get_neighbours(chans[i])
+                    scanner.system_info.get_neighbours(chans[i])
                 )
 
                 info = channel_info(
