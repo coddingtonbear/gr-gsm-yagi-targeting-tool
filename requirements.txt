@@ -1,0 +1,2 @@
+coloredlogs==5.0
+click
